@@ -1,21 +1,11 @@
-import torchquantum as tq
-import torchquantum.functional as tqf
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import List
-from dataset import QDrugDataset
 from models.model import *
 from models.Cmodel import *
-import argparse
 import numpy as np
 import sys
 from args import config_parser
-import os
 from utils.eval_validity import *
 from utils.eval_property import *
-
-
 torch_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def setup_seed(seed):
@@ -24,7 +14,6 @@ def setup_seed(seed):
     np.random.seed(seed)
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
-
 
 def reconstruct_func(x, args):
 
@@ -122,7 +111,6 @@ if __name__ == '__main__':
     setup_seed(0)
     args = config_parser().parse_args()
     
-
     if args.model_type == 'DrugQAE':
         model = DrugQAE(args, n_qbits=args.n_qbits, n_blocks=args.n_blocks).to(torch_device)
         exp_name = '20.0'
@@ -133,13 +121,14 @@ if __name__ == '__main__':
         model.eval()
         random_generation(model, args, debug=True)
     elif args.model_type == 'DrugQDM':
-        exp_name = ['106.0', '107.0', '108.0', '109.0']
-        threshold = [0.1, 0.1, 0.2, 0.2]
-        i = 3
+        exp_name = ['106.0', '107.0', '108.0', '109.0', '110.0', '111.0', '112.0', '113.0']
+        threshold = [0.1, 0.1, 0.2, 0.2, 0.2, 0.2, 0.2, 0.1]
+        i = 5
         model = DrugQDM(args, n_qbits=args.n_qbits, n_blocks=args.n_blocks).to(torch_device)
         for model_id in range(0, 25):
             try:
-                raw_params_dict = torch.load(f'save/qm9_results/DrugQDM_qubits7_blocks1_kappa{exp_name[i]}_lr0.001_useMLP_False_threshold{threshold[i]}_maxAtoms9/model_{model_id}.pth')
+                # raw_params_dict = torch.load(f'save/qm9_results/DrugQDM_qubits7_blocks10_kappa{exp_name[i]}_lr0.0005_useMLP_False_threshold{threshold[i]}_maxAtoms9/model_{model_id}.pth')
+                raw_params_dict = torch.load(f'save/qm9_results/DrugQDM_qubits7_blocks10_kappa{exp_name[i]}_lr0.0005_useMLP_False_threshold{threshold[i]}_maxAtoms9/model_{model_id}.pth')
                 print(f'loading model {model_id}')
             except:
                 print(f'model {model_id} not found')

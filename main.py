@@ -115,10 +115,31 @@ def loss_func_qm9_qdm(x, predicted_noise, true_noise, num_vertices, focal_loss):
         dim=1
     )
     noise_direction_acc = ((cos_sim + 1) / 2).item()  # Convert to 0-1 range scalar
+
+    # # Total loss
+    # total_loss = xyz_loss + atom_loss + aux_loss + remain_loss
+
+    l2_norm = torch.norm(predicted_noise, p=2)
     
-    # Total loss
-    total_loss = xyz_loss + atom_loss + aux_loss + remain_loss
+    xyz_weight = 1.0
+    atom_weight = 10.0
+    aux_weight = 1.0
+    remain_weight = 1.0
     
+    kl_loss = F.kl_div(
+        F.log_softmax(predicted_noise, dim=-1),
+        F.softmax(true_noise, dim=-1),
+        reduction='batchmean'
+    )
+    
+    total_loss = (
+        xyz_weight * xyz_loss + 
+        atom_weight * atom_loss + 
+        aux_weight * aux_loss + 
+        remain_weight * remain_loss + 
+        0.1 * l2_norm +
+        0.1 * kl_loss
+    )
     return total_loss, xyz_loss, atom_loss, aux_loss, remain_loss, noise_direction_acc
 
 def main():

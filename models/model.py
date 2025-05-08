@@ -2,13 +2,8 @@ import torchquantum as tq
 import torchquantum.functional as tqf
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torchquantum.operator import op_name_dict
-from typing import List
-from dataset import QDrugDataset
 import math
 import numpy as np
-from tqdm import tqdm
 
 
 class DrugQAE(tq.QuantumModule):
@@ -229,7 +224,7 @@ class DrugQDM(tq.QuantumModule):
         t_embed = self.time_embed(t.reshape(-1, 1))
         results = []
         
-        start_pos = 72  # 8*9=72，假设前72位存储分子信息
+        start_pos = 72
         embed_len = t_embed.shape[1]
         
         assert start_pos + embed_len <= 2**self.n_qbits, "Time embedding exceeds vector dimension"
@@ -264,6 +259,9 @@ class DrugQDM(tq.QuantumModule):
         alpha_bar_t = alpha_bar_t.unsqueeze(-1)
 
         x_noisy = torch.sqrt(alpha_bar_t) * x + torch.sqrt(1 - alpha_bar_t) * noise
+
+        # noise = noise.abs() / torch.norm(noise, dim=1, keepdim=True)
+        noise = (noise - noise.min()) / (noise.max() - noise.min())
         x_noisy = x_noisy / torch.norm(x_noisy, dim=1, keepdim=True)
         
         return x_noisy, noise
@@ -282,8 +280,6 @@ class DrugQDM(tq.QuantumModule):
                 for i in range(self.n_qbits):
                     self.crx_layer[k*self.n_qbits+i](self.qdev, wires=[i, (i+1)%self.n_qbits])
 
-
-        
         for k in range(self.n_blocks, -1, -1):
             if k == self.n_blocks:
                 for i in range(self.n_qbits):
@@ -297,6 +293,7 @@ class DrugQDM(tq.QuantumModule):
                     self.rz2_layer_d[k*self.n_qbits+i](self.qdev, wires=i)
                     self.ry_layer_d[k*self.n_qbits+i](self.qdev, wires=i)
                     self.rz1_layer_d[k*self.n_qbits+i](self.qdev, wires=i)
+
         pred_noise = self.qdev.get_states_1d().abs()
         return pred_noise
     
@@ -326,10 +323,7 @@ class DrugQDM(tq.QuantumModule):
             eps = 1e-8
             alpha_bar_curr = torch.clamp(alpha_bar_curr, min=eps, max=1.0-eps)
     
-            sigma_square_term = torch.clamp(
-                (1 - alpha_bar_next) / (1 - alpha_bar_curr) * (1 - alpha_curr / alpha_bar_curr),
-                min=0.0
-            )
+            sigma_square_term = torch.clamp((1 - alpha_bar_next) / (1 - alpha_bar_curr) * (1 - alpha_curr / alpha_bar_curr), min=0.0)
             sigma = ddim_eta * torch.sqrt(sigma_square_term)
             sqrt_term = torch.clamp(1 - alpha_bar_next - sigma**2, min=0.0)
 
