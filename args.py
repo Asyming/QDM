@@ -26,7 +26,7 @@ def config_parser():
     parser.add_argument("--hidden_dim", type=int, default=512, help='save dir')
     parser.add_argument("--postprecess", type=int, default=0, help='save dir')
     parser.add_argument("--threshold", type=float, default=0.2, help='save dir')
-    parser.add_argument("--max_atoms", type=int, default=12, help='max_atoms')
+    parser.add_argument("--max_atoms", type=int, default=9, help='max_atoms')
     parser.add_argument("--atom_dict", type=dict, default={0:6, 1:7, 2:8, 3:9, 4:16, 5:17, 6:36, 7:53, 8:54}, help='atom_dict')
     parser.add_argument("--num_condition", type=int, default=0)
     parser.add_argument("--property_index", type=int, default=0)
@@ -40,6 +40,6 @@ def config_parser():
     parser.add_argument("--ddim_steps", type=int, default=20, help='Number of DDIM sampling steps')
     parser.add_argument("--ddim_eta", type=float, default=0.0, help='DDIM eta parameter (0 for deterministic sampling)')
 
-    parser.add_argument("--model_id", type=int, default=0, help='model id')
+    parser.add_argument("--exp_id", type=int, default=0)
     
     return parser

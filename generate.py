@@ -121,14 +121,14 @@ if __name__ == '__main__':
         model.eval()
         random_generation(model, args, debug=True)
     elif args.model_type == 'DrugQDM':
-        exp_name = ['106.0', '107.0', '108.0', '109.0', '110.0', '111.0', '112.0', '113.0']
-        threshold = [0.1, 0.1, 0.2, 0.2, 0.2, 0.2, 0.2, 0.1]
-        i = 5
+        exp_name = ['113.0', '114.0', '115.0', '116.0']
+        lr = ['0.0005','0.0001', '1e-05', '0.0001']
+        i = args.exp_id
         model = DrugQDM(args, n_qbits=args.n_qbits, n_blocks=args.n_blocks).to(torch_device)
-        for model_id in range(0, 25):
+        for model_id in range(0, 100):
             try:
                 # raw_params_dict = torch.load(f'save/qm9_results/DrugQDM_qubits7_blocks10_kappa{exp_name[i]}_lr0.0005_useMLP_False_threshold{threshold[i]}_maxAtoms9/model_{model_id}.pth')
-                raw_params_dict = torch.load(f'save/qm9_results/DrugQDM_qubits7_blocks10_kappa{exp_name[i]}_lr0.0005_useMLP_False_threshold{threshold[i]}_maxAtoms9/model_{model_id}.pth')
+                raw_params_dict = torch.load(f'save/qm9_results/DrugQDM_qubits7_blocks{args.n_blocks}_kappa{exp_name[i]}_lr{lr[i]}_useMLP_False_threshold0.1_maxAtoms9/model_{model_id}.pth')
                 print(f'loading model {model_id}')
             except:
                 print(f'model {model_id} not found')

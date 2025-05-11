@@ -98,14 +98,14 @@ def loss_func_qm9_qdm(x, predicted_noise, true_noise, num_vertices, focal_loss):
     
     aux_noise_pred = predicted_noise[7*num_vertices:8*num_vertices]
     aux_noise_true = true_noise[7*num_vertices:8*num_vertices]
-    # aux_loss = F.l1_loss(aux_noise_pred, aux_noise_true) # 107, 109
-    aux_loss = F.mse_loss(aux_noise_pred, aux_noise_true) # 106, 108
+    aux_loss = F.l1_loss(aux_noise_pred, aux_noise_true) # 107, 109, 114
+    # aux_loss = F.mse_loss(aux_noise_pred, aux_noise_true) # 106, 108, 111, 112, 113
     
     # Loss for remaining noise
     remain_noise_pred = predicted_noise[8*num_vertices:-1]
     remain_noise_true = true_noise[8*num_vertices:-1]
-    # remain_loss = F.l1_loss(remain_noise_pred, remain_noise_true) # 107, 109
-    remain_loss = F.mse_loss(remain_noise_pred, remain_noise_true) # 106, 108
+    remain_loss = F.l1_loss(remain_noise_pred, remain_noise_true) # 107, 109, 114
+    # remain_loss = F.mse_loss(remain_noise_pred, remain_noise_true) # 106, 108, 111, 112, 113
 
 
     # Calculate noise direction accuracy (using cosine similarity)
@@ -116,30 +116,9 @@ def loss_func_qm9_qdm(x, predicted_noise, true_noise, num_vertices, focal_loss):
     )
     noise_direction_acc = ((cos_sim + 1) / 2).item()  # Convert to 0-1 range scalar
 
-    # # Total loss
-    # total_loss = xyz_loss + atom_loss + aux_loss + remain_loss
+    # Total loss
+    total_loss = xyz_loss + atom_loss + aux_loss + remain_loss
 
-    l2_norm = torch.norm(predicted_noise, p=2)
-    
-    xyz_weight = 1.0
-    atom_weight = 10.0
-    aux_weight = 1.0
-    remain_weight = 1.0
-    
-    kl_loss = F.kl_div(
-        F.log_softmax(predicted_noise, dim=-1),
-        F.softmax(true_noise, dim=-1),
-        reduction='batchmean'
-    )
-    
-    total_loss = (
-        xyz_weight * xyz_loss + 
-        atom_weight * atom_loss + 
-        aux_weight * aux_loss + 
-        remain_weight * remain_loss + 
-        0.1 * l2_norm +
-        0.1 * kl_loss
-    )
     return total_loss, xyz_loss, atom_loss, aux_loss, remain_loss, noise_direction_acc
 
 def main():
@@ -291,10 +270,10 @@ def main():
         print("generate complete dataset...")
         if args.model_type == 'DrugQAE':
             setup_seed(0)
-            random_generation(model, args, f=f)
+            random_generation(model, args, f=f, debug=True)
         elif args.model_type == 'DrugQDM':
             setup_seed(0)
-            diffusion_generation(model, args, f=f)
+            diffusion_generation(model, args, f=f, debug=True)
 
 if __name__ == '__main__':
     main()

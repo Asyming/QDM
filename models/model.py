@@ -302,6 +302,7 @@ class DrugQDM(tq.QuantumModule):
             ddim_steps = self.args.ddim_steps
         if ddim_eta is None:
             ddim_eta = self.args.ddim_eta
+        print(ddim_steps, ddim_eta)
             
         device = next(self.parameters()).device
 
@@ -317,15 +318,19 @@ class DrugQDM(tq.QuantumModule):
             # Predict noise
             predicted_noise = self(x, t_curr)
             
-            alpha_curr, alpha_bar_curr = self.compute_alpha(t_curr)
-            alpha_next, alpha_bar_next = self.compute_alpha(t_next) if i < ddim_steps-1 else (torch.ones_like(t_curr), torch.ones_like(t_curr))
+            _, alpha_bar_curr = self.compute_alpha(t_curr)
+            _, alpha_bar_next = self.compute_alpha(t_next) if i < ddim_steps-1 else (torch.ones_like(t_curr), torch.ones_like(t_curr))
             
             eps = 1e-8
             alpha_bar_curr = torch.clamp(alpha_bar_curr, min=eps, max=1.0-eps)
-    
-            sigma_square_term = torch.clamp((1 - alpha_bar_next) / (1 - alpha_bar_curr) * (1 - alpha_curr / alpha_bar_curr), min=0.0)
+            
+            sigma_square_term = torch.clamp(
+                (1.0 - alpha_bar_next) / (1.0 - alpha_bar_curr) * (1.0 - alpha_bar_curr / alpha_bar_next),
+                min=0.0
+            )
             sigma = ddim_eta * torch.sqrt(sigma_square_term)
             sqrt_term = torch.clamp(1 - alpha_bar_next - sigma**2, min=0.0)
+            # print(f'sigma: {sigma[0]}')
 
             c1 = torch.sqrt(alpha_bar_next / alpha_bar_curr)
             c2 = torch.sqrt(sqrt_term)
