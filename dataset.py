@@ -58,8 +58,8 @@ class QDrugDataset(torch.utils.data.Dataset):
         diff_minmax = np.max(max_val-min_val)
         print(f'diff_minmax: {diff_minmax}')
         
-        if self.args.model_type == 'DrugQAE':
-            self.dataset = np.zeros((len(self.raw_data), 2**self.args.n_qbits))
+        if self.args.model_type in ['DrugQAE', 'DrugQDM']:
+            self.dataset = np.zeros((len(self.raw_data), 2**self.args.main_qbits + 1))
             self.info = []
             max_len = 0
             for i,item in enumerate(self.raw_data):
@@ -78,27 +78,27 @@ class QDrugDataset(torch.utils.data.Dataset):
                     max_len = len(position)
                 self.info.append({'x': self.dataset[i], 'smi': item['smi']})
 
-        elif self.args.model_type == 'DrugQDM':
-            self.dataset = np.zeros((len(self.raw_data), 2**self.args.main_qbits))
-            self.info = []
-            max_len = 0
-            for i,item in enumerate(self.raw_data):
-                position = (item['position'] - min_val) / diff_minmax
-                atom_type = np.eye(self.atom_types)[item['atom_type'].astype(int)].squeeze(1)
-                # aux_vec = []
-                # for j in range(len(position)):
-                #     aux_vec.append(math.sqrt(3 - (position[j][0] ** 2 + position[j][1] ** 2 + position[j][2] ** 2)))
-                # aux_vec = np.array(aux_vec)
-                tmp = np.concatenate((position, atom_type), axis=1).flatten()
-                self.dataset[i][:len(tmp)] = tmp
-                # self.dataset[i][len(tmp):len(position)+len(tmp)] = aux_vec
-                # self.dataset[i] = self.dataset[i] / (2*math.sqrt(len(position)))
-                self.dataset[i][-1] = len(position)
-                # self.dataset[i] = self.dataset[i] / math.sqrt(1.0 + len(position)**2)
-                # assert np.abs(np.sum(self.dataset[i]**2) - 1.0) < 1e-6, f'{np.sum(self.dataset[i]**2)}'
-                if len(position) > max_len:
-                    max_len = len(position)
-                self.info.append({'x': self.dataset[i], 'smi': item['smi']})
+        # elif self.args.model_type == 'DrugQDM':
+        #     self.dataset = np.zeros((len(self.raw_data), 2**self.args.main_qbits))
+        #     self.info = []
+        #     max_len = 0
+        #     for i,item in enumerate(self.raw_data):
+        #         position = (item['position'] - min_val) / diff_minmax
+        #         atom_type = np.eye(self.atom_types)[item['atom_type'].astype(int)].squeeze(1)
+        #         # aux_vec = []
+        #         # for j in range(len(position)):
+        #         #     aux_vec.append(math.sqrt(3 - (position[j][0] ** 2 + position[j][1] ** 2 + position[j][2] ** 2)))
+        #         # aux_vec = np.array(aux_vec)
+        #         tmp = np.concatenate((position, atom_type), axis=1).flatten()
+        #         self.dataset[i][:len(tmp)] = tmp
+        #         # self.dataset[i][len(tmp):len(position)+len(tmp)] = aux_vec
+        #         # self.dataset[i] = self.dataset[i] / (2*math.sqrt(len(position)))
+        #         # self.dataset[i][-1] = len(position)
+        #         # self.dataset[i] = self.dataset[i] / math.sqrt(1.0 + len(position)**2)
+        #         # assert np.abs(np.sum(self.dataset[i]**2) - 1.0) < 1e-6, f'{np.sum(self.dataset[i]**2)}'
+        #         if len(position) > max_len:
+        #             max_len = len(position)
+        #         self.info.append({'x': self.dataset[i], 'smi': item['smi']})
 
 
         self.diff_minmax = diff_minmax

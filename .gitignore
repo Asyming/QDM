@@ -12,3 +12,4 @@ train.bat
 demo.py
 demo.ipynb
 utils/
+.DS_Store

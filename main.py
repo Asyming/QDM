@@ -4,7 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from dataset import QDrugDataset
-from models.model import DrugQAE, DrugQDM
+from models.model import DrugQAE
+from models.model_op import DrugQDM
 import numpy as np
 from args import config_parser
 from generate import random_generation, diffusion_generation
@@ -16,6 +17,8 @@ def setup_seed(seed):
     np.random.seed(seed)
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True, warn_only=True)
 
 class MultiClassFocalLossWithAlpha(nn.Module):
     def __init__(self, args, reduction='mean'):
@@ -76,47 +79,42 @@ def loss_func_qm9(x, y, num_vertices, focal_loss):
 def fidelity_loss(x, y):
     return 1 - (torch.dot(x, y)) ** 2
 
-def loss_func_qm9_qdm(x, predicted_noise, true_noise, num_vertices, focal_loss):
-    #data_vertices = x[:7*num_vertices].reshape(num_vertices, 7)
-    pred_noise_vertices = predicted_noise[:7*num_vertices].reshape(num_vertices, 7)
-    true_noise_vertices = true_noise[:7*num_vertices].reshape(num_vertices, 7)
+def loss_func_qm9_qdm(pred_x0, true_x0, model, num_vertices, focal_loss):
+    pred_vertices = pred_x0[:7*num_vertices].reshape(num_vertices, 7)
+    true_vertices = true_x0[:7*num_vertices].reshape(num_vertices, 7)
+    # print(f"pred_vertices: {pred_vertices}")
+    # print(f"true_vertices: {true_vertices}")
+    pred_xyz = pred_vertices[:, :3]
+    true_xyz = true_vertices[:, :3]
+    xyz_loss = F.mse_loss(pred_xyz, true_xyz)
     
-    pred_noise_xyz = pred_noise_vertices[:, :3]
-    true_noise_xyz = true_noise_vertices[:, :3]
+    true_atom_type = torch.argmax(true_vertices[:, 3:7], dim=-1)
+    pred_atom_type_logits = pred_vertices[:, 3:7]
     
-    pred_noise_atom = pred_noise_vertices[:, 3:7]
-    true_noise_atom = true_noise_vertices[:, 3:7]
-    
-    atom_num_pred = torch.sqrt(2.0 * predicted_noise[-1]**2 / (1.0 - predicted_noise[-1]**2))
-    atom_num_true = true_noise[-1] #num_vertices.float() / torch.sqrt(2.0 + num_vertices.float()**2)
-
-    xyz_loss = F.mse_loss(pred_noise_xyz, true_noise_xyz)
-    atom_loss = F.mse_loss(pred_noise_atom, true_noise_atom)
-    atom_num_loss = F.l1_loss(atom_num_pred, atom_num_true)
-
-    # aux_noise_pred = predicted_noise[7*num_vertices:8*num_vertices]
-    # aux_noise_true = true_noise[7*num_vertices:8*num_vertices]
-    # aux_loss = F.l1_loss(aux_noise_pred, aux_noise_true) # 107, 109, 114
-    # # aux_loss = F.mse_loss(aux_noise_pred, aux_noise_true) # 106, 108, 111, 112, 113
-    
-    # Loss for remaining noise
-    # remain_noise_pred = predicted_noise[7*num_vertices:-1]
-    # remain_noise_true = true_noise[7*num_vertices:-1]
-    # remain_loss = F.l1_loss(remain_noise_pred, remain_noise_true) # 107, 109, 114
-    # remain_loss = F.mse_loss(remain_noise_pred, remain_noise_true) # 106, 108, 111, 112, 113
-
-    # Calculate noise direction accuracy (using cosine similarity)
-    cos_sim = F.cosine_similarity(
-        predicted_noise.unsqueeze(0), 
-        true_noise.unsqueeze(0), 
-        dim=1
+    constrained_loss = F.mse_loss(
+        (pred_atom_type_logits ** 2).sum(dim=1), 
+        torch.tensor([0.25 / num_vertices] * num_vertices).to(torch_device)
     )
-    noise_direction_acc = ((cos_sim + 1) / 2).item()  # Convert to 0-1 range scalar
-
-    # Total loss
-    total_loss = xyz_loss + atom_loss + atom_num_loss * 0.001
-
-    return total_loss, xyz_loss, atom_loss, atom_num_loss * 0.001, noise_direction_acc
+    
+    pred_atom_type_normalized = pred_atom_type_logits ** 2 * num_vertices * 2
+    pred_atom_type_normalized = pred_atom_type_normalized / (pred_atom_type_normalized.sum(dim=1).unsqueeze(1))
+    
+    atom_type_loss = focal_loss(pred_atom_type_normalized, true_atom_type)
+    
+    pred_aux = pred_x0[7*num_vertices:8*num_vertices]
+    true_aux = true_x0[7*num_vertices:8*num_vertices]
+    aux_loss = F.mse_loss(pred_aux, true_aux)
+    
+    pred_remain = pred_x0[8*num_vertices:]
+    true_remain = true_x0[8*num_vertices:]
+    remain_loss = F.mse_loss(pred_remain, true_remain)
+    
+    pred_atom_type_class = torch.argmax(pred_atom_type_logits, dim=-1)
+    accuracy = (true_atom_type == pred_atom_type_class).float().mean()
+    
+    total_loss = (1000 * xyz_loss + 100 * aux_loss + 1000 * remain_loss) + 10000 * constrained_loss + 10 * atom_type_loss
+    
+    return total_loss, 1000 * xyz_loss, 100 * aux_loss, 1000 * remain_loss, 10000 * constrained_loss, 10 * atom_type_loss, accuracy
 
 def main():
     setup_seed(0)
@@ -134,16 +132,18 @@ def main():
 
     min_val, diff_minmax = dataset.min_val, dataset.diff_minmax
 
+    generator = torch.Generator()
+    generator.manual_seed(0)
+    
     train_dl = torch.utils.data.DataLoader(
         dataset,
         batch_size=args.batch_size,
-        sampler=torch.utils.data.RandomSampler(dataset),
+        sampler=torch.utils.data.RandomSampler(dataset, generator=generator),
     )
 
     # Select model based on model_type
     if args.model_type == 'DrugQAE':
-        model = DrugQAE(args, n_qbits=args.n_qbits, n_blocks=args.n_blocks, 
-                        bottleneck_qbits=args.bottleneck_qbits).to(torch_device)
+        model = DrugQAE(args, n_qbits=args.n_qbits, n_blocks=args.n_blocks, bottleneck_qbits=args.bottleneck_qbits).to(torch_device)
     elif args.model_type == 'DrugQDM':
         model = DrugQDM(args, n_qbits=args.n_qbits, n_blocks=args.n_blocks).to(torch_device)
 
@@ -206,33 +206,39 @@ def main():
                 )
             
             elif args.model_type == 'DrugQDM':
-                x, smi = batch_dict['x'], batch_dict['smi']
-                x = x.float().to(torch_device)
-                num_vertices = x[:, -1].clone().int()
-                assert torch.all((num_vertices >= 1) & (num_vertices <= args.max_atoms))
+                x_whole, smi = batch_dict['x'], batch_dict['smi']
+                x = x_whole[:, :-1].float().to(torch_device)
+                num_vertices = x_whole[:, -1].to(torch_device).int()
+                # x, smi = batch_dict['x'], batch_dict['smi']
                 batch_size = x.shape[0]
-                t = torch.rand(batch_size).to(torch_device)
-                x_noisy, true_noise = model.q_sample(x, t)
-                predicted_noise = model(x_noisy, t)
-
-                loss, xyz_loss, atom_loss, atom_num_loss, noise_acc = 0.0, 0.0, 0.0, 0.0, 0.0
+                
+                t_indices = torch.randint(0, args.timesteps, (batch_size,)).to(torch_device)
+                x_noisy, _ = model.q_sample(x, t_indices)
+                
+                predicted_x0 = model(x_noisy, t_indices)
+                
+                loss, xyz_loss, aux_loss, remain_loss, constrained_loss, atom_type_loss, acc = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
                 
                 for i in range(batch_size):
-                    loss_, xyz_loss_, atom_loss_, atom_num_loss_, noise_acc_ = loss_func(
-                        x[i], predicted_noise[i], true_noise[i], num_vertices[i], focal_loss)
+                    loss_, xyz_loss_, aux_loss_, remain_loss_, constrained_loss_, atom_type_loss_, acc_ = loss_func_qm9_qdm(
+                        predicted_x0[i], x[i], model, num_vertices[i], focal_loss)
                     loss += loss_
                     xyz_loss += xyz_loss_
-                    atom_loss += atom_loss_
-                    atom_num_loss += atom_num_loss_
-                    noise_acc += noise_acc_
+                    aux_loss += aux_loss_
+                    remain_loss += remain_loss_
+                    constrained_loss += constrained_loss_
+                    atom_type_loss += atom_type_loss_
+                    acc += acc_
                 
                 sys.stdout.write(
                     f"\r{batches + 1} / {len(train_dl)}, "
                     f"loss:{loss / batch_size:.6f}, "
                     f"xyz:{xyz_loss / batch_size:.6f}, "
-                    f"atom:{atom_loss / batch_size:.6f}, "
-                    f"atom_num:{atom_num_loss / batch_size:.6f}, "
-                    f"NoiseAcc:{noise_acc / batch_size:.6f}"
+                    f"aux:{aux_loss / batch_size:.6f}, "
+                    f"remain:{remain_loss / batch_size:.6f}, "
+                    f"constrained:{constrained_loss / batch_size:.6f}, "
+                    f"atom:{atom_type_loss / batch_size:.6f}, "
+                    f"Acc:{acc / batch_size:.6f}"
                 )
             
             sys.stdout.flush()

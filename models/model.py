@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import math
 import numpy as np
-
+import torch.distributions as dist
 
 class DrugQAE(tq.QuantumModule):
     def __init__(self, args, n_qbits=10, n_blocks=1, bottleneck_qbits=2, use_sigmoid=False):
@@ -83,7 +83,6 @@ class DrugQAE(tq.QuantumModule):
     def forward(self, x, measure=False):
         bsz = x.shape[0]
         self.qdev.reset_states(bsz)
-        print(torch.sum(x[0][0:72]**2))
 
         if self.args.use_MLP:
             x = self.MLP_in(x)
@@ -173,18 +172,24 @@ class DrugQDM(tq.QuantumModule):
         super().__init__()
         self.args = args
         self.device = args.device
-        self.time_embed = nn.Sequential(
-            nn.Linear(1, args.time_emb_dim),
-            nn.SiLU(),
-            nn.Linear(args.time_emb_dim, args.time_emb_dim)
-        )
         self.encoder = tq.AmplitudeEncoder()
         self.use_sigmoid = use_sigmoid
         self.n_blocks = n_blocks
-        self.n_qbits = n_qbits
-        self.beta = torch.linspace(args.beta_start, args.beta_end, args.timesteps).to(self.device)
+        self.n_qbits = args.n_qbits
+        self.main_qbits = args.main_qbits
+        self.post_mlp = nn.Sequential(
+            nn.Linear(2**args.main_qbits, 2**args.main_qbits)
+        )
+        
+        steps = torch.arange(args.timesteps + 1, dtype=torch.float32)
+        alphas_cumprod = torch.cos(((steps / args.timesteps) + args.cosine_s) / (1 + args.cosine_s) * math.pi * 0.5) ** 2
+        alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+        self.alpha_bar = alphas_cumprod[1:].to(self.device)
+        betas = 1 - (self.alpha_bar[1:] / self.alpha_bar[:-1])
+        beta_0 = 1 - self.alpha_bar[0]
+        self.beta = torch.cat([beta_0.unsqueeze(0), betas])
+        self.beta = torch.clamp(self.beta, 0.0001, 0.9999)
         self.alpha = 1 - self.beta
-        self.alpha_bar = torch.cumprod(self.alpha, dim=0)
 
         self.ry_layer, self.rz1_layer, self.rz2_layer, self.crx_layer = \
             tq.QuantumModuleList(), tq.QuantumModuleList(), tq.QuantumModuleList(), tq.QuantumModuleList()
@@ -219,55 +224,92 @@ class DrugQDM(tq.QuantumModule):
         self.measure = tq.MeasureAll(tq.PauliZ)
         self.qdev = tq.QuantumDevice(n_qbits)
         
-    def add_time_embedding(self, x, t): # x: x_noisy, t: t
+    def compute_alpha(self, t_indices):
+        t_indices = torch.clamp(t_indices, 0, self.args.timesteps - 1)
+        
+        alpha_t = self.alpha[t_indices]
+        alpha_bar_t = self.alpha_bar[t_indices]
+        return alpha_t, alpha_bar_t
+
+    def sinusoidal_time_embedding(self, timesteps, embedding_dim):
+        half_dim = embedding_dim // 2
+        freqs = torch.exp(-math.log(10000) * torch.arange(half_dim, dtype=torch.float32) / half_dim)
+        freqs = freqs.to(timesteps.device)
+        args = timesteps[:, None].float() * freqs[None, :]
+        embeddings = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        if embedding_dim % 2 == 1:
+            embeddings = torch.cat([embeddings, torch.zeros_like(embeddings[:, :1])], dim=-1)
+        return embeddings
+
+    def add_condition_embedding(self, x, t_indices):
         bsz = x.shape[0]
-        t_embed = self.time_embed(t.reshape(-1, 1)) # TODO: 改成用sin和cos, 同时归一化
+        available_dim = 2**self.n_qbits - 2**self.args.main_qbits
+        time_emb_dim = min(available_dim, 2**self.args.time_emb_dim)
+        
+        t_embed = self.sinusoidal_time_embedding(t_indices, time_emb_dim)
         t_embed = t_embed / torch.norm(t_embed, dim=1, keepdim=True)
+        
         results = []
-        
-        start_pos = 2**self.args.main_qbits
-        embed_len = t_embed.shape[1]
-        
-        assert start_pos + embed_len <= 2**self.n_qbits, "Time embedding exceeds vector dimension"
         
         for i in range(bsz):
             current_x = x[i:i+1].clone()
-            current_x= torch.cat([current_x, t_embed[i:i+1], torch.zeros(1, 2**self.n_qbits - start_pos - embed_len).to(self.device)], dim=1)
+            current_x = torch.cat([
+                current_x,
+                t_embed[i:i+1], 
+                torch.zeros(1, 2**self.n_qbits - 2**self.args.main_qbits - time_emb_dim).to(self.device)
+            ], dim=1)
             results.append(current_x)
+        
         results = torch.cat(results, dim=0)
         return results
 
-    def compute_alpha(self, t):
-        t_int = (t * (self.args.timesteps - 1)).long()
-        t_int = torch.clamp(t_int, 0, self.args.timesteps - 1)
-        
-        alpha_t = self.alpha[t_int]
-        alpha_bar_t = self.alpha_bar[t_int]
-        return alpha_t, alpha_bar_t
-
-    def q_sample(self, x, t, noise=None):
-        x_main = x[:, :-1]
+    def q_sample(self, x, t_indices, noise=None):
         if noise is None:
-            noise = torch.randn_like(x_main)
-        _, alpha_bar_t = self.compute_alpha(t)
+            noise = torch.randn_like(x)
+        _, alpha_bar_t = self.compute_alpha(t_indices)
         alpha_bar_t = alpha_bar_t.unsqueeze(-1)
-        x_noisy = torch.sqrt(alpha_bar_t) * x_main + torch.sqrt(1 - alpha_bar_t) * noise
-        noise = noise.abs() / torch.norm(noise, dim=1, keepdim=True) # TODO: 这样是否会造成异号的噪声认为是同一个?
-        x_noisy = torch.cat([x_noisy, x[:, -1].unsqueeze(-1)], dim=1)
-        noise = torch.cat([noise, x[:, -1].unsqueeze(-1)], dim=1)
+        x_noisy = torch.sqrt(alpha_bar_t) * x + torch.sqrt(1 - alpha_bar_t) * noise
         return x_noisy, noise
+
+    # def Unif2Gauss(self, x):
+    #     """
+    #     Input: x with shape (batch_size, dim), where each row is on S^{dim-1} ∩ R^dim_{>0}(unit norm, all positive)
+    #     Output: standard Gaussian distribution with same shape
+    #     """
+    #     batch_size, dim = x.shape
+    #     device = x.device
+        
+    #     # Method: Use the fact that if Z ~ N(0,I), then |Z|/||Z|| is uniform on positive unit sphere
+    #     # So we need to: 1) sample radius from chi distribution, 2) assign random signs
+        
+    #     generator = torch.Generator(device=device)
+    #     generator.manual_seed(0)
+        
+    #     # Step 1: Sample radius-squared from chi-squared distribution with 'dim' degrees of freedom
+    #     # This gives us the correct radial distribution for Gaussian vectors
+    #     chi2_dist = dist.Chi2(dim)
+    #     radius_squared = chi2_dist.sample((batch_size,)).to(device)
+    #     radius = torch.sqrt(radius_squared)
+        
+    #     # Step 2: Scale the unit vectors by the sampled radius
+    #     scaled_vectors = x * radius.unsqueeze(-1)
+        
+    #     # Step 3: Randomly assign signs to each component
+    #     # Each component should be positive or negative with equal probability
+    #     signs = torch.randint(0, 2, (batch_size, dim), device=device, generator=generator) * 2 - 1  # -1 or +1
+    #     gaussian_vectors = scaled_vectors * signs.float()
+        
+    #     return gaussian_vectors
  
-    def forward(self, x, t): # x: x_noisy, t: t
+    def forward(self, x, t_indices):
         bsz = x.shape[0]
         self.qdev.reset_states(bsz)
-        x_with_t = self.add_time_embedding(x, t)
-        # print(x_with_t[0,56:64])
-        main_norm = x_with_t[:, 0:7*9] / torch.norm(x_with_t[:, 0:7*9], dim=1, keepdim=True)
-        x_with_t = torch.cat([main_norm, x_with_t[:, 7*9:]], dim=1)
-        x_with_t = x_with_t / torch.sqrt((2.0 + x_with_t[:, 2**self.args.main_qbits-1]**2).unsqueeze(-1))
-        # norm = torch.norm(x_with_t, dim=1, keepdim=True)
-        # # print(f't, norm: {t[0], norm[0]}')
-        # x_with_t_norm = x_with_t / norm
+        x_with_t = self.add_condition_embedding(x, t_indices)
+        
+        main_feat_norm = x_with_t[:, :2**self.args.main_qbits] / torch.norm(x_with_t[:, :2**self.args.main_qbits], dim=1, keepdim=True)
+        time_feat = x_with_t[:, 2**self.args.main_qbits:]
+        x_with_t = torch.cat([main_feat_norm, time_feat], dim=1) / math.sqrt(2.0)
+
         self.encoder(self.qdev, x_with_t)
         for k in range(self.n_blocks+1):
             for i in range(self.n_qbits):
@@ -291,17 +333,15 @@ class DrugQDM(tq.QuantumModule):
                     self.rz2_layer_d[k*self.n_qbits+i](self.qdev, wires=i)
                     self.ry_layer_d[k*self.n_qbits+i](self.qdev, wires=i)
                     self.rz1_layer_d[k*self.n_qbits+i](self.qdev, wires=i)
-
+        
+        # pred_noise = self.measure(self.qdev)
         pred_noise = self.qdev.get_states_1d().abs()
         pred_noise = pred_noise**2
         pred_noise = pred_noise.reshape(-1, pow(2, self.args.main_qbits), pow(2, self.n_qbits - self.args.main_qbits)).sum(axis=-1).sqrt()
-        # weights = pred_noise ** 2
-        # samples = torch.randn_like(pred_noise)
-        # gaussian_noise = (weights * samples).sum(dim=-1, keepdim=True)
-        # pred_noise = (gaussian_noise - gaussian_noise.mean(dim=-1, keepdim=True)) / gaussian_noise.std(dim=-1, keepdim=True)
-        # pred_noise = torch.sqrt(torch.tensor(2.0)) * torch.erfinv(2 * pred_noise - 1) # Uniform to Gaussian
-        # pred_noise = pred_noise # * norm
-        # print(pred_noise[0][0])
+        pred_noise = self.post_mlp(pred_noise)
+        # pred_noise = self.Unif2Gauss(pred_noise)
+        # if torch.rand(1) < 0.1:
+        #     print(f'pred_noise: {pred_noise[0][0:10]}')
         return pred_noise
     
     def sample_ddim(self, batch_size, ddim_steps=None, ddim_eta=None):
@@ -311,40 +351,49 @@ class DrugQDM(tq.QuantumModule):
             ddim_eta = self.args.ddim_eta
         print(ddim_steps, ddim_eta)
         device = next(self.parameters()).device
-        x_main = torch.randn(batch_size, 2**self.args.main_qbits-1).to(device)
-        x = torch.cat([x_main, torch.randint(9, 10, (batch_size, 1)).to(device)], dim=1)# TODO: 改成按数据集的比例生成
-        time_steps = torch.linspace(1, 0, ddim_steps + 1).to(device)
-        # self.qdev.reset_states(batch_size)
+        
+        generator = torch.Generator(device=device)
+        generator.manual_seed(0)
+        
+        x = torch.randn(batch_size, 2**self.args.main_qbits, device=device, generator=generator)
+        
+        time_indices = torch.linspace(self.args.timesteps - 1, 0, ddim_steps + 1, dtype=torch.long).to(device)
+        
         for i in range(ddim_steps):
-            t_curr = time_steps[i] * torch.ones(batch_size).to(device)
-            t_next = time_steps[i+1] * torch.ones(batch_size).to(device)
-            # Predict noise
-            predicted_noise = self(x, t_curr) if i == 0 else self(x_next, t_curr)
+            t_curr = time_indices[i].repeat(batch_size)
+            t_next = time_indices[i+1].repeat(batch_size) if i < ddim_steps-1 else torch.zeros_like(t_curr)
+            
+            predicted_noise = self(x, t_curr)
+            
             _, alpha_bar_curr = self.compute_alpha(t_curr)
             _, alpha_bar_next = self.compute_alpha(t_next) if i < ddim_steps-1 else (torch.ones_like(t_curr), torch.ones_like(t_curr))
             
-            eps = 1e-8
+            eps = 1e-4
             alpha_bar_curr = torch.clamp(alpha_bar_curr, min=eps, max=1.0-eps)
             sigma_square_term = torch.clamp(
                 (1.0 - alpha_bar_next) / (1.0 - alpha_bar_curr) * (1.0 - alpha_bar_curr / alpha_bar_next),
                 min=0.0
             )
             sigma = ddim_eta * torch.sqrt(sigma_square_term)
-            print(f'sigma: {sigma[0]}')
             sqrt_term = torch.clamp(1 - alpha_bar_next - sigma**2, min=0.0)
-            # print(f'sigma: {sigma[0]}')
 
             c1 = torch.sqrt(alpha_bar_next / alpha_bar_curr)
             c2 = torch.sqrt(sqrt_term)
             c3 = torch.sqrt(1 - alpha_bar_curr)
             c2 = c2 - c3 * c1
+            c1 = torch.clamp(c1, min=1.0, max=2.0)
+            c2 = torch.clamp(c2, min=-1.0, max=1.0)
+            c3 = torch.clamp(c3, min=0.0, max=1.0)
+            print(f'c1: {c1},\n c2: {c2},\n c3: {c3}')
             
             noise = torch.randn_like(x) if ddim_eta > 0 else 0
-            noise = noise.abs() / torch.norm(noise, dim=1, keepdim=True) ## align with predicted_noise and true_noise
-            x_next = c1.unsqueeze(-1) * x_next + c2.unsqueeze(-1) * predicted_noise if i > 0 else c1.unsqueeze(-1) * x + c2.unsqueeze(-1) * predicted_noise
+            
+            x_next = c1.unsqueeze(-1) * x + c2.unsqueeze(-1) * predicted_noise
             if ddim_eta > 0:
                 x_next = x_next + sigma.unsqueeze(-1) * noise
-        x = (x_next - x_next.min(dim=1, keepdim=True).values) / (x_next.max(dim=1, keepdim=True).values - x_next.min(dim=1, keepdim=True).values)
+            
+            x = x_next
+        # x = (x_next - x_next.min(dim=1, keepdim=True).values) / (x_next.max(dim=1, keepdim=True).values - x_next.min(dim=1, keepdim=True).values)
         # x = x_next.abs() / torch.norm(x_next, dim=1, keepdim=True)
 
         assert not torch.isnan(x).any()

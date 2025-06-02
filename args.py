@@ -6,13 +6,13 @@ def config_parser():
     parser.add_argument("--model_type", type=str, default='DrugQAE', choices=['DrugQAE', 'DrugQDM'])
     # training options
     parser.add_argument("--device", type=str, default='cuda', help='device')
-    parser.add_argument("--n_qbits", type=int, default=7, help='number of qubits in the QAE/QDM')
-    parser.add_argument("--main_qbits", type=int, default=6, help='number of main qubits in the QDM') # 6 for QM9
-    parser.add_argument("--num_epochs", type=int, default=100, help='number of epochs to run')
-    parser.add_argument("--lr", type=float, default=0.001, help='initial learning rate')
+    parser.add_argument("--n_qbits", type=int, default=8, help='number of qubits in the QAE/QDM')
+    parser.add_argument("--main_qbits", type=int, default=7, help='number of main qubits in the QDM') # 7 for QM9
+    parser.add_argument("--num_epochs", type=int, default=1000, help='number of epochs to run')
+    parser.add_argument("--lr", type=float, default=0.0005, help='initial learning rate')
     parser.add_argument("--batch_size", type=int, default=512, help='batch size')
     parser.add_argument("--generate_num", type=int, default=1000, help='generate num')
-    parser.add_argument("--eval_interval", type=int, default=5, help='eval interval')
+    parser.add_argument("--eval_interval", type=int, default=10, help='eval interval')
     parser.add_argument("--n_blocks", type=int, default=10, help='no of blocks in the QAE')
     parser.add_argument("--optim", type=str, default='adam', help='optimizer to use')
     parser.add_argument("--weight_decay", type=float, default=0.0001, help='weight decay')
@@ -32,15 +32,16 @@ def config_parser():
     parser.add_argument("--num_condition", type=int, default=0)
     parser.add_argument("--property_index", type=int, default=0)
 
-    parser.add_argument("--timesteps", type=int, default=1000, help='diffusion timesteps')
+    parser.add_argument("--timesteps", type=int, default=500, help='diffusion timesteps')
     parser.add_argument("--time_emb_dim", type=int, default=32, help='time embedding dimension')
-    parser.add_argument("--sampling_timesteps", type=int, default=100, help='timesteps for DDIM sampling')
-    parser.add_argument("--beta_start", type=float, default=1e-4, help='start value for beta schedule')
-    parser.add_argument("--beta_end", type=float, default=0.02, help='end value for beta schedule')
+    # parser.add_argument("--beta_start", type=float, default=1e-4, help='start value for beta schedule')
+    # parser.add_argument("--beta_end", type=float, default=0.02, help='end value for beta schedule')
+    parser.add_argument("--cosine_s", type=float, default=0.008, help='cosine schedule offset parameter')
     
-    parser.add_argument("--ddim_steps", type=int, default=20, help='Number of DDIM sampling steps')
+    parser.add_argument("--ddim_steps", type=int, default=30, help='Number of DDIM sampling steps')
     parser.add_argument("--ddim_eta", type=float, default=0.0, help='DDIM eta parameter (0 for deterministic sampling)')
 
     parser.add_argument("--exp_id", type=int, default=0)
+
     
     return parser

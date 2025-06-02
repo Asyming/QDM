@@ -15,9 +15,12 @@ def setup_seed(seed):
     np.random.seed(seed)
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True, warn_only=True)
 
 def reconstruct_func(x, args):
     for i in range(args.max_atoms+1):
+        x[7*i+3:7*i+7].sum()
         if x[7*i+3:7*i+7].sum() <= args.threshold:
             break
     num_vertices = i
@@ -36,9 +39,9 @@ def reconstruct_func(x, args):
         atom_type[i] = np.argmax(x[i*7+3:i*7+7])
         atom_type[i] = atomic_type_dict[atom_type[i]]
         if args.model_type == 'DrugQAE':
-            position[i] = x[i*7:i*7+3] * 2 * math.sqrt(len(position)) * diff_minmax + min_val
+            position[i] = x[i*7:i*7+3] * 2 * diff_minmax + min_val
         elif args.model_type == 'DrugQDM':
-            position[i] = x[i*7:i*7+3] *  diff_minmax + min_val
+            position[i] = x[i*7:i*7+3] * 2 * diff_minmax + min_val
 
     return atom_type, position
 
@@ -68,6 +71,9 @@ def reconstruct_func(x, args):
 def random_generation(model, args, generate_num = None, f = None, debug = False):
     generate_num = args.generate_num if generate_num is None else generate_num
     atom_type, positions = [], []
+    
+    np.random.seed(0)
+    
     for i in range(generate_num):
         sys.stdout.write(f'\rgenerating {i+1}/{generate_num}')
         sys.stdout.flush()
@@ -139,21 +145,23 @@ if __name__ == '__main__':
     
     if args.model_type == 'DrugQAE':
         model = DrugQAE(args, n_qbits=args.n_qbits, n_blocks=args.n_blocks).to(torch_device)
-        exp_name = '20.0'
-        raw_params_dict = torch.load(f'save/qm9_results/DrugQAE_qubits7_blocks10_kappa{exp_name}_lr0.001_useMLP_False_threshold0.2_maxAtoms9/model_10.pth')
-        if 'qdev.states' in raw_params_dict:
+        exp_name = '0.1'
+        for i in range(0, 1):
+            # raw_params_dict = torch.load(f'save/qm9_results/DrugQAE_qubits7_blocks10_kappa{exp_name}_lr0.01_useMLP_False_threshold0.2025_maxAtoms10/model_{i}.pth')
+            raw_params_dict = torch.load(f'/data3/lihan/projects/zisen/ageaware/experiments/qm/checkpoint/model.pth')
+            if 'qdev.states' in raw_params_dict:
                 raw_params_dict['qdev.states'] = torch.zeros((1,2,2,2,2,2,2,2), dtype=torch.complex64)
-        model.load_state_dict(raw_params_dict)
-        model.eval()
-        random_generation(model, args, debug=True)
+            model.load_state_dict(raw_params_dict)
+            model.eval()
+            random_generation(model, args, debug=True)
     elif args.model_type == 'DrugQDM':
-        exp_name = ['122.0','123.0']
-        lr = ['0.0001','0.0001']
+        exp_name = ['124.0','124.0']
+        lr = ['0.0005','0.0005']
         i = args.exp_id
         model = DrugQDM(args, n_qbits=args.n_qbits, n_blocks=args.n_blocks).to(torch_device)
-        for model_id in range(0, 100, 9):
+        for model_id in range(0, 10):
             try:
-                raw_params_dict = torch.load(f'save/qm9_results/DrugQDM_qubits7_blocks{args.n_blocks}_kappa{exp_name[i]}_lr{lr[i]}_useMLP_False_threshold0.0_maxAtoms9/model_{model_id}.pth')
+                raw_params_dict = torch.load(f'save/qm9_results/DrugQDM_qubits8_blocks{args.n_blocks}_kappa{exp_name[i]}_lr{lr[i]}_useMLP_False_threshold0.0_maxAtoms9/model_{model_id}.pth')
                 print(f'loading model {model_id}')
             except:
                 print(f'model {model_id} not found')
