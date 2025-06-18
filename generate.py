@@ -1,5 +1,6 @@
 import torch
-from models.model import *
+from models.model import DrugQAE
+from models.model_op import DrugQDM, DrugQDM_v2
 from models.Cmodel import *
 import numpy as np
 import sys
@@ -7,6 +8,7 @@ from args import config_parser
 import math
 from utils.eval_validity import *
 from utils.eval_property import *
+import gc
 torch_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def setup_seed(seed):
@@ -19,55 +21,76 @@ def setup_seed(seed):
     torch.use_deterministic_algorithms(True, warn_only=True)
 
 def reconstruct_func(x, args):
-    for i in range(args.max_atoms+1):
-        x[7*i+3:7*i+7].sum()
-        if x[7*i+3:7*i+7].sum() <= args.threshold:
-            break
-    num_vertices = i
+    if args.model_type == 'DrugQAE' or args.model_type == 'DrugQDM':
+        for i in range(args.max_atoms + 1):
+            if i >= args.max_atoms:
+                num_vertices = args.max_atoms
+                break
+            if x[7*i+3:7*i+7].sum() <= args.threshold:
+                break
+        num_vertices = i
 
-    if num_vertices == 0 or num_vertices ==1:
-        return None, None
+        if num_vertices == 0 or num_vertices == 1:
+            return None, None
 
-    x = x.detach().cpu().numpy()
-    min_val = np.array([-3.92718444, -4.54352093, -5.10957203])
-    diff_minmax = 10.36
-    atomic_type_dict = {0:6, 1:7, 2:8, 3:9, 4:16, 5:17, 6:36, 7:53, 8:54}
-    atom_type = np.zeros((num_vertices), dtype=int)
-    position = np.zeros((num_vertices, 3))
-    
-    for i in range(num_vertices):
-        atom_type[i] = np.argmax(x[i*7+3:i*7+7])
-        atom_type[i] = atomic_type_dict[atom_type[i]]
-        if args.model_type == 'DrugQAE':
-            position[i] = x[i*7:i*7+3] * 2 * diff_minmax + min_val
-        elif args.model_type == 'DrugQDM':
-            position[i] = x[i*7:i*7+3] * 2 * diff_minmax + min_val
+        x = x.detach().cpu().numpy()
+        min_val = np.array([-3.92718444, -4.54352093, -5.10957203])
+        diff_minmax = 10.36
+        atomic_type_dict = {0:6, 1:7, 2:8, 3:9}
+        atom_type = np.zeros((num_vertices), dtype=int)
+        position = np.zeros((num_vertices, 3))
+        
+        for i in range(num_vertices):
+            atom_type[i] = np.argmax(x[i*7+3:i*7+7])
+            atom_type[i] = atomic_type_dict[atom_type[i]]
+            # The scaling factor is an empirical choice from the original repo
+            # to attempt to reverse the normalization.
+            norm_factor = 2 * math.sqrt(num_vertices)
+            position[i] = x[i*7:i*7+3] * norm_factor * diff_minmax + min_val
+        
+        return atom_type, position
 
-    return atom_type, position
+    elif args.model_type == 'DrugQDM_v2':
+        block_size = args.max_atoms + 6
+        for i in range(args.max_atoms + 1):
+            if i >= args.max_atoms:
+                num_vertices = args.max_atoms
+                break
+            # Calculate where the 7D node feature starts for atom i
+            node_feat_abs_start = i * block_size + i
+            # Get the one-hot part
+            one_hot_part = x[node_feat_abs_start + 3 : node_feat_abs_start + 7]
+            # Use the same thresholding logic as the V1 models
+            if one_hot_part.sum() <= args.threshold:
+                break
+        num_vertices = i
+        
+        if num_vertices == 0 or num_vertices == 1:
+            return None, None
 
-# def reconstruct_func_qdm(x, args):
-#     for i in range(args.max_atoms):
-#         if x[7*i+3:7*i+7].sum() <= args.threshold:
-#             break
-#     num_vertices = i
+        x = x.detach().cpu().numpy()
+        min_val = np.array([-3.92718444, -4.54352093, -5.10957203])
+        diff_minmax = 10.36
+        atomic_type_dict = {0:6, 1:7, 2:8, 3:9}
+        atom_type = np.zeros((num_vertices), dtype=int)
+        position = np.zeros((num_vertices, 3))
 
-#     if num_vertices == 0 or num_vertices ==1:
-#         return None, None
+        for i in range(num_vertices):
+            node_feat_abs_start = i * block_size + i
+            node_feat = x[node_feat_abs_start : node_feat_abs_start + 7]
+            
+            current_pos = node_feat[:3]
+            current_type_logits = node_feat[3:7]
 
-#     x = x.detach().cpu().numpy()
-#     min_val = np.array([-3.92718444, -4.54352093, -5.10957203])
-#     diff_minmax = 10.36
-#     atomic_type_dict = {0:6, 1:7, 2:8, 3:9, 4:16, 5:17, 6:36, 7:53, 8:54}
-#     atom_type = np.zeros((num_vertices), dtype=int)
-#     position = np.zeros((num_vertices, 3))
-    
-#     for i in range(num_vertices):
-#         atom_type[i] = np.argmax(x[i*7+3:i*7+7])
-#         atom_type[i] = atomic_type_dict[atom_type[i]]
-#         position[i] = x[i*7:i*7+3] * diff_minmax + min_val
+            atom_type[i] = np.argmax(current_type_logits)
+            atom_type[i] = atomic_type_dict[atom_type[i]]
 
-#     return atom_type, position
-    
+            # Denormalization based on the formula used in dataset.py for v2
+            norm = 2 * num_vertices #np.sqrt(2 * num_vertices * (3 * num_vertices + 2))
+            position[i] = current_pos * norm * diff_minmax + min_val
+            
+        return atom_type, position
+
 def random_generation(model, args, generate_num = None, f = None, debug = False):
     generate_num = args.generate_num if generate_num is None else generate_num
     atom_type, positions = [], []
@@ -140,7 +163,10 @@ def diffusion_generation(model, args, generate_num = None, f = None, debug = Fal
                 f.write(f" bond mmd {key}: {value}\n")
 
 if __name__ == '__main__':
-    setup_seed(0)
+    setup_seed(42)
+    torch.cuda.empty_cache()
+    gc.collect()
+    torch.cuda.reset_peak_memory_stats()
     args = config_parser().parse_args()
     
     if args.model_type == 'DrugQAE':
@@ -155,13 +181,13 @@ if __name__ == '__main__':
             model.eval()
             random_generation(model, args, debug=True)
     elif args.model_type == 'DrugQDM':
-        exp_name = ['124.0','124.0']
-        lr = ['0.0005','0.0005']
+        exp_name = ['128.0','124.0']
+        lr = ['0.001','0.0005']
         i = args.exp_id
         model = DrugQDM(args, n_qbits=args.n_qbits, n_blocks=args.n_blocks).to(torch_device)
-        for model_id in range(0, 10):
+        for model_id in [70]:
             try:
-                raw_params_dict = torch.load(f'save/qm9_results/DrugQDM_qubits8_blocks{args.n_blocks}_kappa{exp_name[i]}_lr{lr[i]}_useMLP_False_threshold0.0_maxAtoms9/model_{model_id}.pth')
+                raw_params_dict = torch.load(f'save/qm9_results/DrugQDM_qubits8_blocks{args.n_blocks}_kappa{exp_name[i]}_lr{lr[i]}_useMLP_False_threshold0.0_maxAtoms10/model_{model_id}.pth')
                 print(f'loading model {model_id}')
             except:
                 print(f'model {model_id} not found')
@@ -169,6 +195,35 @@ if __name__ == '__main__':
             if 'qdev.states' in raw_params_dict:
                 raw_params_dict['qdev.states'] = torch.zeros((1,2,2,2,2,2,2,2), dtype=torch.complex64)
                 model.qdev.states = torch.zeros((1,2,2,2,2,2,2,2), dtype=torch.complex64)
+            model.load_state_dict(raw_params_dict)
+            model.eval()
+            diffusion_generation(model, args, debug=True)
+
+    elif args.model_type == 'DrugQDM_v2':
+        exp_name = ['127.0','128.0','129.0']
+        lr = ['0.0001','0.0005','0.0005']
+        n_blocks = [5,5,1]
+        i = args.exp_id
+        model = DrugQDM_v2(args, n_qbits=args.n_qbits, n_blocks=args.n_blocks).to(torch_device)
+        for model_id in range(4,5):
+            try:
+                raw_params_dict = torch.load(f'save/qm9_results/DrugQDM_v2_qubits9_blocks{n_blocks[i]}_kappa{exp_name[i]}_lr{lr[i]}_useMLP_False_threshold0.0_maxAtoms9/model_{model_id}.pth')
+                print(f'loading model {model_id}')
+            except:
+                print(f'model {model_id} not found')
+                continue
+            if 'qdev_up.states' in raw_params_dict:
+                raw_params_dict['qdev_up.states'] = torch.zeros((1,2,2,2,2,2,2,2,2,2,2), dtype=torch.complex64)
+                model.qdev_up.states = torch.zeros((1,2,2,2,2,2,2,2,2,2,2), dtype=torch.complex64)
+            if 'qdev1.states' in raw_params_dict:
+                raw_params_dict['qdev1.states'] = torch.zeros((1,2,2,2,2,2,2,2,2,2), dtype=torch.complex64)
+                model.qdev1.states = torch.zeros((1,2,2,2,2,2,2,2,2,2), dtype=torch.complex64)
+            if 'qdev2.states' in raw_params_dict:
+                raw_params_dict['qdev2.states'] = torch.zeros((1,2,2,2,2,2,2,2,2), dtype=torch.complex64)
+                model.qdev2.states = torch.zeros((1,2,2,2,2,2,2,2,2), dtype=torch.complex64)
+            if 'qdev3.states' in raw_params_dict:
+                raw_params_dict['qdev3.states'] = torch.zeros((1,2,2,2,2,2,2,2), dtype=torch.complex64)
+                model.qdev3.states = torch.zeros((1,2,2,2,2,2,2,2), dtype=torch.complex64)
             model.load_state_dict(raw_params_dict)
             model.eval()
             diffusion_generation(model, args, debug=True)

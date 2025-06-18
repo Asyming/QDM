@@ -3,11 +3,11 @@ import argparse
 
 def config_parser():
     parser = argparse.ArgumentParser(description='Qdrug')
-    parser.add_argument("--model_type", type=str, default='DrugQAE', choices=['DrugQAE', 'DrugQDM'])
+    parser.add_argument("--model_type", type=str, default='DrugQAE', choices=['DrugQAE', 'DrugQDM', 'DrugQDM_v2'])
     # training options
     parser.add_argument("--device", type=str, default='cuda', help='device')
-    parser.add_argument("--n_qbits", type=int, default=8, help='number of qubits in the QAE/QDM')
-    parser.add_argument("--main_qbits", type=int, default=7, help='number of main qubits in the QDM') # 7 for QM9
+    parser.add_argument("--n_qbits", type=int, default=9, help='number of qubits in the QAE/QDM')
+    parser.add_argument("--main_qbits", type=int, default=8, help='number of main qubits in the QDM') # 7 for QM9
     parser.add_argument("--num_epochs", type=int, default=1000, help='number of epochs to run')
     parser.add_argument("--lr", type=float, default=0.0005, help='initial learning rate')
     parser.add_argument("--batch_size", type=int, default=512, help='batch size')

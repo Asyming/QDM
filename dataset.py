@@ -9,6 +9,7 @@ import pickle
 import math
 import os
 from args import config_parser
+from scipy.spatial.distance import cdist
 
 class QDrugDataset(torch.utils.data.Dataset):
     def __init__(self, args, load_from_cache=False, file_path='data/'):
@@ -51,6 +52,7 @@ class QDrugDataset(torch.utils.data.Dataset):
             position.append(item['position'])
         position = np.concatenate(position, axis=0)
         print(f'position.shape: {position.shape}')
+        print(f'mean_position: {np.mean(position, axis=0)}')
         min_val = np.min(position, axis=0)
         print(f'min_val: {min_val}')
         max_val = np.max(position, axis=0)
@@ -78,28 +80,51 @@ class QDrugDataset(torch.utils.data.Dataset):
                     max_len = len(position)
                 self.info.append({'x': self.dataset[i], 'smi': item['smi']})
 
-        # elif self.args.model_type == 'DrugQDM':
-        #     self.dataset = np.zeros((len(self.raw_data), 2**self.args.main_qbits))
-        #     self.info = []
-        #     max_len = 0
-        #     for i,item in enumerate(self.raw_data):
-        #         position = (item['position'] - min_val) / diff_minmax
-        #         atom_type = np.eye(self.atom_types)[item['atom_type'].astype(int)].squeeze(1)
-        #         # aux_vec = []
-        #         # for j in range(len(position)):
-        #         #     aux_vec.append(math.sqrt(3 - (position[j][0] ** 2 + position[j][1] ** 2 + position[j][2] ** 2)))
-        #         # aux_vec = np.array(aux_vec)
-        #         tmp = np.concatenate((position, atom_type), axis=1).flatten()
-        #         self.dataset[i][:len(tmp)] = tmp
-        #         # self.dataset[i][len(tmp):len(position)+len(tmp)] = aux_vec
-        #         # self.dataset[i] = self.dataset[i] / (2*math.sqrt(len(position)))
-        #         # self.dataset[i][-1] = len(position)
-        #         # self.dataset[i] = self.dataset[i] / math.sqrt(1.0 + len(position)**2)
-        #         # assert np.abs(np.sum(self.dataset[i]**2) - 1.0) < 1e-6, f'{np.sum(self.dataset[i]**2)}'
-        #         if len(position) > max_len:
-        #             max_len = len(position)
-        #         self.info.append({'x': self.dataset[i], 'smi': item['smi']})
+        elif self.args.model_type == 'DrugQDM_v2':
+            max_feat_len = self.args.max_atoms * (7 + self.args.max_atoms - 1) + self.args.max_atoms
+            assert max_feat_len <= 2**self.args.main_qbits
+            self.dataset = np.zeros((len(self.raw_data), 2**self.args.main_qbits + 1))
+            self.info = []
+            
+            for i, item in enumerate(self.raw_data):
+                n_atoms = len(item['position'])
+                if n_atoms == 0 or n_atoms > self.args.max_atoms:
+                    continue
+                position = (item['position'] - min_val) / diff_minmax
+                atom_type = np.eye(self.atom_types)[item['atom_type'].astype(int)].squeeze(1)
+                real_dist_matrix = cdist(position, position)
+                full_dist_matrix = np.zeros((self.args.max_atoms, self.args.max_atoms))
+                full_dist_matrix[:n_atoms, :n_atoms] = real_dist_matrix 
+                node_features = np.concatenate((position, atom_type), axis=1)
 
+                molecule_feature_list = []
+                for j in range(n_atoms):
+                    dist_row = full_dist_matrix[j, :]
+                    node_feat = node_features[j, :]
+                    dist_part1 = dist_row[:j]
+                    dist_part2 = dist_row[j+1:]
+                    combined_row = np.concatenate([dist_part1, node_feat, dist_part2])
+                    molecule_feature_list.append(combined_row)
+                
+                if molecule_feature_list:
+                    flat_features = np.concatenate(molecule_feature_list)
+                else:
+                    flat_features = np.array([])
+                
+                aux_vec_components = np.sqrt(3 - np.sum(position**2, axis=1))
+                aux_vec = np.sqrt(2 * n_atoms + 1) * aux_vec_components
+                corr_val = np.sqrt(2) * np.sqrt(np.sum(min_val**2)) * n_atoms / diff_minmax
+                aux_vec = np.concatenate([aux_vec, corr_val.reshape(-1)])
+                final_features = np.concatenate([flat_features, aux_vec])
+                
+                vec = np.zeros(2**self.args.main_qbits + 1)
+                current_total_len = len(final_features)
+                vec[:current_total_len] = final_features[:current_total_len]
+                norm = np.sqrt(2 * n_atoms * (3 * n_atoms + 2))
+                vec[:-1] = vec[:-1] / norm
+                vec[-1] = n_atoms
+                self.dataset[i] = vec
+                self.info.append({'x': self.dataset[i], 'smi': item['smi']})
 
         self.diff_minmax = diff_minmax
         self.min_val = min_val

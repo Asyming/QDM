@@ -10,9 +10,7 @@ class DrugQAE(tq.QuantumModule):
     def __init__(self, args, n_qbits=10, n_blocks=1, bottleneck_qbits=2, use_sigmoid=False):
         super().__init__()
         self.args = args
-        self.MLP_in = torch.nn.Linear(args.input_dim, 2 ** args.n_qbits)
-        self.MLP_out = torch.nn.Linear(2 ** args.n_qbits, args.input_dim)
-        self.encoder = tq.AmplitudeEncoder() # TODO: can change to multiphaseencoder
+        self.encoder = tq.AmplitudeEncoder()
         self.use_sigmoid = use_sigmoid
         self.n_blocks = n_blocks
         self.n_qbits = n_qbits
@@ -84,9 +82,6 @@ class DrugQAE(tq.QuantumModule):
         bsz = x.shape[0]
         self.qdev.reset_states(bsz)
 
-        if self.args.use_MLP:
-            x = self.MLP_in(x)
-
         if self.encoder:
             self.encoder(self.qdev, x)
 
@@ -100,27 +95,13 @@ class DrugQAE(tq.QuantumModule):
                 for i in range(self.n_qbits):
                     self.crx_layer[k*self.n_qbits+i](self.qdev, wires=[i, (i+1)%self.n_qbits])
             
-        # measure phase
-        if measure:
-            meas = self.measure(self.qdev)
-            # decode phase
-            if self.use_sigmoid:
-                meas = self.digits_to_binary_approx(meas)
-                self.qdev.reset_states(bsz)
-                for i in range(self.n_qbits):
-                    tqf.rx(self.qdev, wires=i, params=math.pi*meas[:, i])
-            else:
-                self.qdev.reset_states(bsz)
-                for i in range(self.n_qbits):
-                    tqf.ry(self.qdev, wires=i, params=meas[:, i])
-        else:
-            output1 = self.qdev.get_states_1d().abs()
-            # 2 ^ 7 -> 2^ 5 # bottleneck操作 ae中显式压缩信息
-            output1 = output1**2
-            output1 = output1.reshape(-1, pow(2, self.n_qbits - self.bottleneck_qbits), pow(2, self.bottleneck_qbits)).sum(axis=-1).sqrt() # 显式meature, output1作为vMF分布的mu
-            decoder_in = self.sampling_vmf(output1, self.kappa)
-            self.qdev.reset_states(bsz)
-            self.encoder(self.qdev, decoder_in)
+        output1 = self.qdev.get_states_1d().abs()
+        # 2 ^ 7 -> 2^ 5 # 下采样操作
+        output1 = output1**2
+        output1 = output1.reshape(-1, pow(2, self.n_qbits - self.bottleneck_qbits), pow(2, self.bottleneck_qbits)).sum(axis=-1).sqrt() # 显式meature, output1作为vMF分布的mu
+        decoder_in = self.sampling_vmf(output1, self.kappa)
+        self.qdev.reset_states(bsz)
+        self.encoder(self.qdev, decoder_in)
         
         for k in range(self.n_blocks, -1, -1):
             if k == self.n_blocks:
@@ -137,8 +118,6 @@ class DrugQAE(tq.QuantumModule):
                     self.rz1_layer_d[k*self.n_qbits+i](self.qdev, wires=i)
 
         reconstruct_vector = self.qdev.get_states_1d().abs()
-        if self.args.use_MLP:
-            reconstruct_vector = self.MLP_out(reconstruct_vector)
                 
         return output1, reconstruct_vector
     
@@ -177,9 +156,9 @@ class DrugQDM(tq.QuantumModule):
         self.n_blocks = n_blocks
         self.n_qbits = args.n_qbits
         self.main_qbits = args.main_qbits
-        self.post_mlp = nn.Sequential(
-            nn.Linear(2**args.main_qbits, 2**args.main_qbits)
-        )
+        # self.post_mlp = nn.Sequential(
+        #     nn.Linear(2**args.main_qbits, 2**args.main_qbits)
+        # )
         
         steps = torch.arange(args.timesteps + 1, dtype=torch.float32)
         alphas_cumprod = torch.cos(((steps / args.timesteps) + args.cosine_s) / (1 + args.cosine_s) * math.pi * 0.5) ** 2
@@ -338,7 +317,7 @@ class DrugQDM(tq.QuantumModule):
         pred_noise = self.qdev.get_states_1d().abs()
         pred_noise = pred_noise**2
         pred_noise = pred_noise.reshape(-1, pow(2, self.args.main_qbits), pow(2, self.n_qbits - self.args.main_qbits)).sum(axis=-1).sqrt()
-        pred_noise = self.post_mlp(pred_noise)
+        # pred_noise = self.post_mlp(pred_noise)
         # pred_noise = self.Unif2Gauss(pred_noise)
         # if torch.rand(1) < 0.1:
         #     print(f'pred_noise: {pred_noise[0][0:10]}')
