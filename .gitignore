@@ -1,6 +1,7 @@
 __pycache__
 checkpoint/
 generated_molecules/
+generate_log/
 data/
 Fig/
 save/
@@ -10,6 +11,9 @@ requirements.txt
 train.bash
 train.bat
 demo.py
+demo_v2.py
+demo_v3.py
 demo.ipynb
+qm9_element_distribution.png
 utils/
 .DS_Store
