@@ -5,6 +5,8 @@ generate_log/
 data/
 Fig/
 save/
+models/model.py
+models/Cmodel.py
 torchquantum/
 README.md
 requirements.txt
@@ -15,5 +17,4 @@ demo_v2.py
 demo_v3.py
 demo.ipynb
 qm9_element_distribution.png
-utils/
 .DS_Store
